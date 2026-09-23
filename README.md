@@ -2,6 +2,8 @@
 
 # Architecture Distilled
 
+<img src="assets/cover.png" alt="Architecture Distilled：把开源架构经验装进 AI，AOSA 10 个项目、1 个 Skill，有出处、有取舍、可验证。" width="480" />
+
 ### 把优秀开源项目的架构经验，变成 AI 可以执行的设计判断。
 
 **10 个真实项目 · 1 个架构 Skill · 每条经验都有出处**
