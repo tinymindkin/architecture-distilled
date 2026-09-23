@@ -1,0 +1,4 @@
+interface:
+  display_name: "Architecture Distilled"
+  short_description: "Architecture decisions grounded in open-source lessons"
+  default_prompt: "Use $architecture-distilled to design or review this system, explaining constraints, trade-offs, failure behavior, and supporting AOSA precedents."
