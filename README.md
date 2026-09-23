@@ -144,10 +144,14 @@ architecture-distilled/
 │   └── references/
 │       ├── casebook.md
 │       └── decision-template.md
-└── examples/webhook-service.md
+└── examples/
+    ├── webhook-service.md
+    └── VALIDATION.md
 ```
 
 ## 质量标准与边界
+
+已检查 Skill 格式、公开仓库的安装发现与文档链接，并用两个独立场景做了行为演练；详见 [验证记录](examples/VALIDATION.md)。这不是效果基准或生产压测。
 
 一个值得合并的改动，应当让 Agent **更容易作出可解释的选择**。新增案例请附上原文、作者、具体机制、代价和一个不适用场景；欢迎用真实请求证明现有指令哪里会误导。
 
