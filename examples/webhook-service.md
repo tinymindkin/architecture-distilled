@@ -27,7 +27,7 @@ Choose PostgreSQL first because the team already operates it. Approve production
 | `receipt` | tenant, idempotency key, request hash, event ID, expiry; unique `(tenant, key)` during a documented 24-hour deduplication window |
 | `event` | tenant, event ID, accepted time, payload, destination version; immutable, daily partitions retained for 30 days |
 | `job` | event ID, due time, attempt count, state, lease token, lease expiry; only active delivery work |
-| `delivery_audit` | event ID, attempt number, timestamps, outcome, bounded error code; daily partitions retained for 30 days |
+| `delivery_audit` | event ID, attempt number, lease token, timestamps, started/outcome/unknown records, bounded error code; daily partitions retained for 30 days |
 
 Store a destination snapshot so edits cannot silently redirect accepted events. Store secrets separately; audit records never contain credentials or response bodies. Encrypt payload storage and authorize audit queries by tenant.
 
@@ -47,27 +47,27 @@ flowchart LR
 
 Jobs transition `pending → leased → succeeded`, or `leased → pending` with a future due time. Permanent failures and exhausted retry budgets transition to `dead`. Success and dead outcomes append audit records and remove active jobs atomically. A lease timeout makes unfinished work claimable again.
 
-Claim a bounded batch using `FOR UPDATE SKIP LOCKED`, assign fresh lease tokens, and commit before making HTTP requests. Finalization must match the token, preventing an expired worker from overwriting a newer attempt. Tokens protect database state; they cannot undo an HTTP request already sent.
+Reserve local send capacity before claiming jobs; claim no more than can start immediately. Use `FOR UPDATE SKIP LOCKED`, assign fresh tokens and 30-second leases, increment the attempt count, append an attempt-start audit record, and commit before HTTP. Check token ownership and at least ten seconds of lease time remaining immediately before sending; otherwise release or let the lease expire without sending. Finalization must match the token, preventing stale workers from changing newer job state. Append each attempt outcome; recovery records expired unfinished attempts as unknown and counts them toward the retry budget. Tokens protect database state, not remote side effects. A process pause after the final check can still cause duplicates; recipient idempotency remains required.
 
-Send a stable event ID and timestamped HMAC signature. Treat `2xx` as acknowledged. Retry timeouts, connection failures, `408`, `429`, and `5xx`, using exponential backoff with jitter and a capped `Retry-After`. Other `4xx` responses become dead deliveries. Disable redirects. Stop automated retries after 24 hours or 20 attempts, whichever comes first; expose failures and authorized manual replay in the audit UI.
+Send a stable event ID and timestamped HMAC signature. Treat `2xx` as acknowledged. Retry timeouts, connection failures, `408`, `429`, and `5xx`, using exponential backoff with jitter and a capped `Retry-After`. Other `4xx` and all `3xx` responses become dead deliveries, with an explicit outcome reason. Disable redirects. Before every claim, enforce the deadline of 24 hours since acceptance and the maximum of 20 claimed attempts, including unknown outcomes; expose failures and authorized manual replay in the audit UI.
 
 A worker can crash after recipient success but before recording it. Redelivery is therefore expected. Recipients must deduplicate the stable event ID. “At least once” describes retry behavior, not guaranteed success against an unavailable recipient. Ordering is not promised.
 
 ## Backpressure and the HTTP trust boundary
 
-Begin with 50 global requests in flight, ten per destination, and a five-second total request timeout. These are tunable starting limits. Isolate noisy tenants through admission quotas and bounded worker batches. Return `429` before acceptance when the queue exceeds its tested capacity; never discard acknowledged events. Alert on oldest due-job age and per-endpoint retry volume, not queue length alone.
+Run at most two worker processes, each capped at 25 concurrent requests and five per destination, with a five-second total HTTP timeout. This bounds the intended aggregate to 50 and ten respectively without a distributed quota service. Disable autoscaling and rollout surge; terminate an old worker before activating its replacement. These are starting limits tied to the fixed replica count; revise the allocation before adding replicas. Isolate noisy tenants through admission quotas and bounded worker batches. Return `429` before acceptance when the queue exceeds its tested capacity; never discard acknowledged events. Alert on oldest due-job age and per-endpoint retry volume, not queue length alone.
 
 Only authenticated tenants can register endpoints. Permit HTTPS on port 443; reject embedded credentials and nonpublic destinations. Validate all resolved IPv4/IPv6 addresses and pin the validated connection address while retaining hostname verification for TLS. Enforce network-level denial of loopback, private, link-local, and metadata destinations. Recheck on every connection; URL validation alone cannot stop DNS rebinding. Bound response bytes and redact logs.
 
 ## Evidence required before launch
 
-On fixed production-like resources, run 100 requests/second for an hour and 1,000/second for 60 seconds with realistic payloads. Require ingestion p95 below 200 ms, no unexplained missing accepted events, and no existing-database SLO regression. Then kill workers before and after HTTP acknowledgment; verify recovery, observable duplicates, and successful recipient deduplication. Test duplicate ingestion races, slow recipients, malicious endpoint URLs, and retention deletion.
+On fixed production-like resources, run 100 requests/second for an hour and 1,000/second for 60 seconds with realistic payloads. Require ingestion p95 below 200 ms, no unexplained missing accepted events, and no existing-database SLO regression. Then kill workers before and after HTTP acknowledgment; verify recovery, observable duplicates, and successful recipient deduplication. Test duplicate ingestion races, slow recipients, malicious endpoint URLs, and retention deletion. With both workers active, verify the aggregate and per-destination caps, crash-at-start audit records, unknown-attempt budget exhaustion, redirect termination, and lease expiry before send.
 
 If workers demonstrate 300 successful deliveries/second, the assumed burst adds approximately 42,000 jobs and drains in 210 seconds after traffic returns to 100/second. This is capacity arithmetic to test, not a benchmark. Verify backup restoration and zone failover against the availability budget.
 
 ## Upgrade and rollback
 
-Investigate a broker when healthy-destination queue age exceeds five minutes during tested bursts, or queue work repeatedly breaches database latency targets. Migrate by tenant: relay transactional outbox entries, preserve event IDs, and assign exactly one active scheduler per tenant. Roll back by pausing that tenant's broker scheduler, reconciling unfinished jobs from durable records, and re-enabling database scheduling. Expect duplicates during reconciliation; never erase accepted work.
+Investigate a broker when healthy-destination queue age exceeds five minutes during tested bursts, or queue work repeatedly breaches database latency targets. Migrate by tenant: relay transactional outbox entries, preserve event IDs, and assign exactly one active scheduler per tenant. Roll back by pausing that tenant's broker scheduler, draining or terminating its in-flight workers, reconciling unfinished jobs from durable records, and re-enabling database scheduling. Keep attempt audit records and completed status for the retention window; replay only while the retained payload exists. Expect duplicates during reconciliation; never erase accepted work.
 
 ## AOSA precedents and limits
 
